@@ -11,6 +11,7 @@
       "supportedTypes": [
         "movie"
       ],
+      "filename": "https://raw.githubusercontent.com/hongQ89/Bagol/main/providers/mangoporn.js",
       "enabled": true,
       "formats": [
         "mp4",
@@ -31,6 +32,7 @@
       "supportedTypes": [
         "movie"
       ],
+      "filename": "https://raw.githubusercontent.com/hongQ89/Bagol/main/providers/xxxparodyhd.js",
       "enabled": true,
       "formats": [
         "mp4",
@@ -51,6 +53,7 @@
       "supportedTypes": [
         "movie"
       ],
+      "filename": "https://raw.githubusercontent.com/hongQ89/Bagol/main/providers/pornwatch.js",
       "enabled": true,
       "formats": [
         "mp4",
