@@ -1,0 +1,83 @@
+{
+  "id": "com.bagolrepo.stremio",
+  "version": "1.0.0",
+  "name": "Bagol Repo",
+  "description": "Adult movies from mangoporn, xxxparodyhd, and pornwatch.",
+  "logo": "https://www.google.com/s2/favicons?domain=mangoporn.net&sz=128",
+  "resources": [
+    "stream"
+  ],
+  "types": [
+    "movie"
+  ],
+  "idPrefixes": [
+    "tt",
+    "tmdb"
+  ],
+  "catalogs": [],
+  "scrapers": [
+    {
+      "id": "mangoporn",
+      "name": "Mangoporn",
+      "description": "Adult movies from mangoporn.net — DoodStream, Filemoon, LuluStream, Vidguard, Player4Me, VidNest",
+      "version": "1.0.0",
+      "author": "kraptor",
+      "supportedTypes": [
+        "movie"
+      ],
+      "filename": "https://raw.githubusercontent.com/hongQ89/Bagol/main/providers/mangoporn.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=mangoporn.net&sz=128",
+      "contentLanguage": [
+        "en"
+      ],
+      "supportsExternalPlayer": true
+    },
+    {
+      "id": "xxxparodyhd",
+      "name": "XXXParodyHD",
+      "description": "Parody adult movies from xxxparodyhd.net — DoodStream, Streamwish, Vidhidepro, Javggvideo",
+      "version": "1.0.0",
+      "author": "kraptor",
+      "supportedTypes": [
+        "movie"
+      ],
+      "filename": "https://raw.githubusercontent.com/hongQ89/Bagol/main/providers/xxxparodyhd.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=xxxparodyhd.net&sz=128",
+      "contentLanguage": [
+        "en"
+      ],
+      "supportsExternalPlayer": true
+    },
+    {
+      "id": "pornwatch",
+      "name": "PornWatch",
+      "description": "Adult movies and scenes from pornwatch.ws — DoodStream, Player4Me",
+      "version": "1.0.0",
+      "author": "kraptor",
+      "supportedTypes": [
+        "movie"
+      ],
+      "filename": "https://raw.githubusercontent.com/hongQ89/Bagol/main/providers/pornwatch.js",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "m3u8"
+      ],
+      "logo": "https://www.google.com/s2/favicons?domain=pornwatch.ws&sz=128",
+      "contentLanguage": [
+        "en"
+      ],
+      "supportsExternalPlayer": true
+    }
+  ]
+}
