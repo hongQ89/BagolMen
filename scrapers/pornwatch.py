@@ -1,6 +1,6 @@
 """
-PornWatch scraper for Stremio
-Migrated from Kodi plugin logic
+PornWatch scraper untuk Stremio
+Migrated dari Kodi plugin dengan robustness improvements
 """
 
 import re
@@ -13,80 +13,63 @@ logger = logging.getLogger(__name__)
 
 
 class PornWatchScraper(BaseScraper):
-    """Scraper for pornwatch.ws"""
+    """Scraper untuk pornwatch.ws"""
     
     SCRAPER_ID = "pornwatch"
     SITE_NAME = "PornWatch"
     SITE_URL = "https://www.pornwatch.ws"
     LOGO_URL = "https://www.google.com/s2/favicons?domain=pornwatch.ws&sz=128"
     
-    def search(self, query: str, year: Optional[str] = None) -> List[Dict]:
-        """
-        Search for scenes on PornWatch
+    # Fallback selectors
+    SEARCH_ITEM_SELECTORS = [
+        ('div.scene-item', 'a'),
+        ('div.video-item', 'a'),
+        ('div.scene', 'a'),
+        ('article', 'h2 a'),
+        ('div[class*="item"]', 'a'),
+    ]
+    
+    def search(self, query: str, year: Optional[str] = None, timeout: Optional[int] = None) -> List[Dict]:
+        """Search untuk scenes di PornWatch"""
+        if not query:
+            return []
         
-        Args:
-            query: Scene title or keyword
-            year: Optional year
-        
-        Returns:
-            List of scene results
-        """
         try:
-            # Check cache first
-            cache_key = f"pornwatch_search_{query}"
+            # Check cache
+            cache_key = self._make_cache_key("pornwatch_search", query, year or "")
             cached = self.cache_get(cache_key)
             if cached:
                 return cached
             
-            # Build search URL
             search_url = f"{self.SITE_URL}/search?q={query.replace(' ', '+')}"
-            logger.info(f"Searching PornWatch: {search_url}")
+            logger.info(f"Searching PornWatch: {search_url[:60]}")
             
-            response = self.http_get(search_url)
+            response = self.http_get(search_url, timeout=timeout or self.REQUEST_TIMEOUT)
             if not response:
                 return []
             
             soup = BeautifulSoup(response.text, 'html.parser')
             results = []
             
-            # Find video/scene items (adjust based on actual layout)
-            items = soup.find_all('div', class_=['scene', 'video-item', 'item', 'content-item'])
+            # Find items dengan fallback
+            items = self._find_items(soup)
+            
+            if not items:
+                logger.debug("No items found")
+                return []
+            
+            logger.info(f"Found {len(items)} items")
             
             for item in items[:10]:
                 try:
-                    # Extract title
-                    title_elem = item.find('a', class_=['title', 'scene-title'])
-                    if not title_elem:
-                        title_elem = item.find('h2') or item.find('h3') or item.find('a')
-                    
-                    title = title_elem.text.strip() if title_elem else "Unknown"
-                    
-                    # Extract URL
-                    url = title_elem.get('href', '') if title_elem else ""
-                    if not url.startswith('http'):
-                        url = self.SITE_URL + url if url.startswith('/') else f"{self.SITE_URL}/{url}"
-                    
-                    if not url or url == self.SITE_URL:
-                        continue
-                    
-                    # Extract thumbnail
-                    thumb_elem = item.find('img')
-                    thumbnail = thumb_elem.get('src', '') if thumb_elem else ""
-                    
-                    result = {
-                        'title': title,
-                        'url': url,
-                        'thumbnail': thumbnail
-                    }
-                    
-                    logger.debug(f"Found: {title}")
-                    results.append(result)
-                    
+                    result = self._parse_item(item)
+                    if result:
+                        results.append(result)
                 except Exception as e:
                     logger.debug(f"Error parsing item: {e}")
                     continue
             
-            # Cache results
+            # Cache
             self.cache_set(cache_key, results)
             
             return results
@@ -95,18 +78,78 @@ class PornWatchScraper(BaseScraper):
             logger.error(f"PornWatch search failed: {e}")
             return []
     
-    def get_streams(self, video_url: str) -> List[Stream]:
-        """
-        Extract playable streams from PornWatch scene page
+    def _find_items(self, soup: BeautifulSoup) -> List:
+        """Find items dengan fallback selectors"""
+        for container_selector, item_selector in self.SEARCH_ITEM_SELECTORS:
+            try:
+                containers = soup.select(container_selector)
+                if containers:
+                    logger.debug(f"Found {len(containers)} items dengan selector: {container_selector}")
+                    return containers
+            except:
+                continue
         
-        Args:
-            video_url: URL of the scene page
+        # Fallback
+        divs = soup.find_all('div', class_=re.compile(r'(scene|video|item|content)', re.IGNORECASE))
+        if divs:
+            logger.debug(f"Found {len(divs)} items dengan regex fallback")
+            return divs
         
-        Returns:
-            List of Stream objects
-        """
+        return []
+    
+    def _parse_item(self, item) -> Optional[Dict]:
+        """Parse single item"""
         try:
-            logger.info(f"Getting streams from: {video_url}")
+            # Extract title
+            title_elem = (
+                item.find('a', class_=re.compile(r'title', re.IGNORECASE)) or
+                item.find('h2') or
+                item.find('h3') or
+                item.find('a')
+            )
+            
+            if not title_elem:
+                return None
+            
+            title = title_elem.get_text(strip=True)
+            if not title:
+                return None
+            
+            # Extract URL
+            url = title_elem.get('href', '')
+            if not url:
+                return None
+            
+            # Make absolute
+            if not url.startswith('http'):
+                url = self.SITE_URL + url if url.startswith('/') else f"{self.SITE_URL}/{url}"
+            
+            if url == self.SITE_URL or not url.startswith('http'):
+                return None
+            
+            # Extract thumbnail
+            thumb_elem = item.find('img')
+            thumbnail = ""
+            if thumb_elem:
+                thumbnail = thumb_elem.get('src') or thumb_elem.get('data-src') or ""
+            
+            return {
+                'title': title[:100],
+                'url': url,
+                'thumbnail': thumbnail
+            }
+            
+        except Exception as e:
+            logger.debug(f"Error parsing item: {e}")
+            return None
+    
+    def get_streams(self, video_url: str) -> List[Stream]:
+        """Extract streams dari PornWatch scene page"""
+        if not video_url:
+            return []
+        
+        try:
+            logger.info(f"Getting streams from: {video_url[:60]}")
             
             response = self.http_get(video_url)
             if not response:
@@ -115,13 +158,15 @@ class PornWatchScraper(BaseScraper):
             soup = BeautifulSoup(response.text, 'html.parser')
             streams = []
             
-            # Extract scene title
+            # Extract title
             title_elem = soup.find('h1') or soup.find('title')
-            page_title = title_elem.text.strip() if title_elem else "Unknown"
+            page_title = title_elem.get_text(strip=True) if title_elem else "Unknown"
+            if not page_title or page_title == "Unknown":
+                page_title = video_url.split('/')[-1].replace('-', ' ')[:50]
             
-            # Method 1: Extract from iframes
+            # Method 1: Iframes
             iframes = soup.find_all('iframe')
-            logger.info(f"Found {len(iframes)} iframes")
+            logger.debug(f"Found {len(iframes)} iframes")
             
             for iframe in iframes:
                 iframe_src = iframe.get('src', '')
@@ -129,7 +174,7 @@ class PornWatchScraper(BaseScraper):
                     if iframe_src.startswith('//'):
                         iframe_src = 'https:' + iframe_src
                     
-                    logger.debug(f"Found iframe: {iframe_src[:50]}...")
+                    logger.debug(f"Found iframe: {iframe_src[:50]}")
                     
                     host = self._get_host_from_url(iframe_src)
                     
@@ -141,38 +186,54 @@ class PornWatchScraper(BaseScraper):
                     )
                     streams.append(stream)
             
-            # Method 2: Extract direct links from scripts
+            # Method 2: Scripts
             script_streams = self._extract_from_scripts(soup, page_title, video_url)
             streams.extend(script_streams)
             
-            # Method 3: Look for embedded players
+            # Method 3: Players
             player_streams = self._extract_from_players(soup, page_title, video_url)
             streams.extend(player_streams)
             
-            logger.info(f"Extracted {len(streams)} streams")
+            # Method 4: Links
+            link_streams = self._extract_from_links(soup, page_title, video_url)
+            streams.extend(link_streams)
             
-            return streams
+            # Remove duplicates
+            unique_streams = self._deduplicate_streams(streams)
+            
+            logger.info(f"Extracted {len(unique_streams)} unique streams")
+            
+            return unique_streams
             
         except Exception as e:
             logger.error(f"Failed to extract streams: {e}")
             return []
     
+    def _deduplicate_streams(self, streams: List[Stream]) -> List[Stream]:
+        """Remove duplicates"""
+        seen = set()
+        unique = []
+        for stream in streams:
+            if stream.url not in seen:
+                seen.add(stream.url)
+                unique.append(stream)
+        return unique
+    
     def _get_host_from_url(self, url: str) -> str:
-        """
-        Identify video host from URL
+        """Identify host dari URL"""
+        if not url:
+            return "Unknown"
         
-        Args:
-            url: Video URL
-        
-        Returns:
-            Host name
-        """
         hosts_map = {
             'doodstream': 'DoodStream',
             'player4me': 'Player4Me',
             'filemoon': 'FileMoon',
             'vidnest': 'VidNest',
             'streamwish': 'StreamWish',
+            'lulustream': 'LuluStream',
+            'vidhidepro': 'VidHidePro',
+            'javggvideo': 'JavggVideo',
+            'vidguard': 'Vidguard',
         }
         
         url_lower = url.lower()
@@ -180,22 +241,12 @@ class PornWatchScraper(BaseScraper):
             if key in url_lower:
                 return value
         
-        # Extract domain
+        # Fallback
         match = re.search(r'https?://(?:www\.)?([^./]+)', url)
         return match.group(1) if match else "Unknown"
     
     def _extract_from_scripts(self, soup: BeautifulSoup, title: str, source_url: str) -> List[Stream]:
-        """
-        Extract video sources from JavaScript
-        
-        Args:
-            soup: BeautifulSoup object
-            title: Video title
-            source_url: Page URL
-        
-        Returns:
-            List of Stream objects
-        """
+        """Extract dari scripts"""
         streams = []
         scripts = soup.find_all('script')
         
@@ -205,27 +256,26 @@ class PornWatchScraper(BaseScraper):
             
             script_text = script.string
             
-            # Look for iframe URLs in JavaScript
+            # Find iframe URLs
             iframe_urls = re.findall(
-                r'https?://[^\s"\']+(?:doodstream|player4me|filemoon|vidnest)[^\s"\']*',
+                r'https?://[^\s"\']+(?:doodstream|player4me|filemoon|vidnest|streamwish)[^\s"\']*',
                 script_text,
                 re.IGNORECASE
             )
             
             for url in iframe_urls:
-                # Clean up URL
                 url = re.sub(r'["\'].*$', '', url)
-                
-                host = self._get_host_from_url(url)
-                stream = Stream(
-                    url=url,
-                    title=title,
-                    sources=[host],
-                    source_url=source_url
-                )
-                streams.append(stream)
+                if url.startswith('http'):
+                    host = self._get_host_from_url(url)
+                    stream = Stream(
+                        url=url,
+                        title=title,
+                        sources=[host],
+                        source_url=source_url
+                    )
+                    streams.append(stream)
             
-            # Look for direct video files
+            # Find video files
             video_urls = re.findall(
                 r'https?://[^\s"\'<>]+\.(?:mp4|m3u8)',
                 script_text,
@@ -243,24 +293,12 @@ class PornWatchScraper(BaseScraper):
         return streams
     
     def _extract_from_players(self, soup: BeautifulSoup, title: str, source_url: str) -> List[Stream]:
-        """
-        Extract streams from embedded player divs
-        
-        Args:
-            soup: BeautifulSoup object
-            title: Video title
-            source_url: Page URL
-        
-        Returns:
-            List of Stream objects
-        """
+        """Extract dari players"""
         streams = []
         
-        # Look for player containers
-        player_divs = soup.find_all('div', class_=['player', 'video-player', 'embed-player'])
+        player_divs = soup.find_all('div', class_=re.compile(r'(player|video-player|embed)', re.IGNORECASE))
         
         for player_div in player_divs:
-            # Check for data attributes
             for attr in ['data-video', 'data-src', 'data-url', 'data-embed']:
                 url = player_div.get(attr, '')
                 if url and url.startswith('http'):
@@ -274,22 +312,39 @@ class PornWatchScraper(BaseScraper):
                     streams.append(stream)
         
         return streams
+    
+    def _extract_from_links(self, soup: BeautifulSoup, title: str, source_url: str) -> List[Stream]:
+        """Extract dari links"""
+        streams = []
+        
+        # Find all links yang looks like video hosts
+        links = soup.find_all('a', href=re.compile(r'(doodstream|player4me|filemoon|vidnest)', re.IGNORECASE))
+        
+        for link in links:
+            href = link.get('href', '')
+            link_text = link.get_text(strip=True)
+            
+            if href and href.startswith('http'):
+                host = self._get_host_from_url(href)
+                
+                stream_title = link_text if link_text else title
+                
+                stream = Stream(
+                    url=href,
+                    title=stream_title[:100],
+                    sources=[host],
+                    source_url=source_url
+                )
+                streams.append(stream)
+        
+        return streams
 
 
-# Create singleton instance
+# Create singleton
 pornwatch = PornWatchScraper()
 
 
 def scrape_pornwatch(query: str, year: Optional[str] = None) -> List[Dict]:
-    """
-    Function interface for addon.py integration
-    
-    Args:
-        query: Scene search query
-        year: Optional year
-    
-    Returns:
-        List of stream dictionaries
-    """
+    """Function interface"""
     streams = pornwatch.scrape(query, year)
     return [s.to_dict() for s in streams]

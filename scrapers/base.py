@@ -7,6 +7,9 @@ import logging
 import time
 import hashlib
 import json
+import random
+import threading
+import concurrent.futures
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
@@ -16,6 +19,16 @@ from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
+
+# Rotating User Agents untuk avoid blocking
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/605.1.15',
+]
 
 
 @dataclass
@@ -37,40 +50,52 @@ class Stream:
 
 
 class Cache:
-    """Simple in-memory cache with TTL"""
+    """Simple in-memory cache dengan TTL dan thread safety"""
     
     def __init__(self, ttl_hours: int = 24):
         self.ttl_hours = ttl_hours
         self.cache: Dict[str, tuple] = {}
+        self.lock = threading.RLock()  # Thread-safe
     
     def get(self, key: str) -> Optional[Any]:
-        """Get from cache if not expired"""
-        if key not in self.cache:
-            return None
-        
-        data, timestamp = self.cache[key]
-        
-        # Check if expired
-        if datetime.now() - timestamp > timedelta(hours=self.ttl_hours):
-            del self.cache[key]
-            return None
-        
-        logger.debug(f"Cache hit: {key}")
-        return data
+        """Get from cache jika belum expired"""
+        with self.lock:
+            if key not in self.cache:
+                return None
+            
+            data, timestamp = self.cache[key]
+            
+            # Check jika expired
+            if datetime.now() - timestamp > timedelta(hours=self.ttl_hours):
+                del self.cache[key]
+                return None
+            
+            logger.debug(f"Cache hit: {key}")
+            return data
     
     def set(self, key: str, value: Any) -> None:
         """Store in cache"""
-        self.cache[key] = (value, datetime.now())
-        logger.debug(f"Cache set: {key}")
+        with self.lock:
+            self.cache[key] = (value, datetime.now())
+            logger.debug(f"Cache set: {key}")
     
     def clear(self) -> None:
         """Clear all cache"""
-        self.cache.clear()
-        logger.info("Cache cleared")
+        with self.lock:
+            self.cache.clear()
+            logger.info("Cache cleared")
+    
+    def get_stats(self) -> Dict:
+        """Get cache statistics"""
+        with self.lock:
+            return {
+                "total_keys": len(self.cache),
+                "memory_usage_estimate": sum(len(str(v)) for v, _ in self.cache.values())
+            }
 
 
 class BaseScraper:
-    """Base class for content scrapers"""
+    """Base class for content scrapers dengan robust error handling"""
     
     SCRAPER_ID = "base"
     SITE_NAME = "Unknown"
@@ -86,7 +111,7 @@ class BaseScraper:
         logger.info(f"Initialized {self.SITE_NAME} scraper")
     
     def _create_session(self) -> requests.Session:
-        """Create requests session with retry logic"""
+        """Create requests session dengan retry logic"""
         session = requests.Session()
         
         # Configure retry strategy
@@ -101,28 +126,32 @@ class BaseScraper:
         session.mount("http://", adapter)
         session.mount("https://", adapter)
         
-        # Set headers
+        # Set rotating user agent
         session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': random.choice(USER_AGENTS)
         })
         
         return session
     
     def http_get(self, url: str, **kwargs) -> Optional[requests.Response]:
         """
-        Make HTTP GET request with error handling
+        Make HTTP GET request dengan comprehensive error handling
         
         Args:
             url: URL to fetch
             **kwargs: Additional requests arguments
         
         Returns:
-            Response object or None if failed
+            Response object atau None jika failed
         """
+        if not url:
+            logger.warning("Empty URL provided")
+            return None
+        
         try:
             timeout = kwargs.pop('timeout', self.REQUEST_TIMEOUT)
             
-            logger.debug(f"GET {url[:50]}...")
+            logger.debug(f"GET {url[:60]}...")
             response = self.session.get(
                 url,
                 timeout=timeout,
@@ -136,16 +165,16 @@ class BaseScraper:
             return response
             
         except requests.Timeout:
-            logger.warning(f"Timeout: {url}")
+            logger.warning(f"Timeout (>{self.REQUEST_TIMEOUT}s): {url[:60]}")
             return None
         except requests.ConnectionError:
-            logger.warning(f"Connection error: {url}")
+            logger.warning(f"Connection error: {url[:60]}")
             return None
         except requests.HTTPError as e:
-            logger.warning(f"HTTP error {e.response.status_code}: {url}")
+            logger.warning(f"HTTP error {e.response.status_code}: {url[:60]}")
             return None
         except Exception as e:
-            logger.error(f"Request failed: {e}")
+            logger.error(f"Request failed: {str(e)[:100]}")
             return None
     
     def cache_get(self, key: str) -> Optional[Any]:
@@ -160,13 +189,28 @@ class BaseScraper:
         """Clear cache"""
         self.cache.clear()
     
-    def search(self, query: str, year: Optional[str] = None) -> List[Dict]:
+    def _make_cache_key(self, *parts: str) -> str:
+        """
+        Create hash-based cache key (safe untuk special chars)
+        
+        Args:
+            *parts: Key components
+        
+        Returns:
+            Hash-based cache key
+        """
+        combined = "_".join(str(p) for p in parts)
+        hash_val = hashlib.md5(combined.encode()).hexdigest()[:8]
+        return f"cache_{hash_val}_{combined[:20]}"
+    
+    def search(self, query: str, year: Optional[str] = None, timeout: Optional[int] = None) -> List[Dict]:
         """
         Search for content (implement in subclass)
         
         Args:
             query: Search query
             year: Optional year filter
+            timeout: Optional timeout in seconds
         
         Returns:
             List of results
@@ -187,7 +231,7 @@ class BaseScraper:
     
     def scrape(self, query: str, year: Optional[str] = None) -> List[Stream]:
         """
-        Main scraping method: search and extract streams
+        Main scraping method: search dan extract streams
         
         Args:
             query: Search query
@@ -196,22 +240,39 @@ class BaseScraper:
         Returns:
             List of Stream objects
         """
+        if not query or not isinstance(query, str):
+            logger.error(f"Invalid query type: {type(query)}")
+            return []
+        
         try:
-            logger.info(f"{self.SITE_NAME} scraping: {query}")
+            logger.info(f"{self.SITE_NAME} scraping: {query[:50]}")
             
-            # Search for content
-            results = self.search(query, year)
-            
-            if not results:
-                logger.info(f"No results found for {query}")
+            # Search for content dengan timeout
+            try:
+                results = self.search(query, year, timeout=10)
+            except Exception as e:
+                logger.error(f"Search failed for {self.SITE_NAME}: {e}")
                 return []
             
-            # Extract streams from first result
+            if not results:
+                logger.warning(f"[{self.SITE_NAME}] No search results for: {query}")
+                return []
+            
+            # Extract streams from first result dengan timeout
             if results:
                 first_url = results[0].get('url', '')
                 if first_url:
-                    streams = self.get_streams(first_url)
-                    return streams
+                    try:
+                        streams = self.get_streams(first_url)
+                        
+                        # Filter invalid streams
+                        valid_streams = [s for s in streams if s and s.url]
+                        logger.info(f"[{self.SITE_NAME}] Got {len(valid_streams)} valid streams")
+                        
+                        return valid_streams
+                    except Exception as e:
+                        logger.error(f"get_streams failed for {self.SITE_NAME}: {e}")
+                        return []
             
             return []
             
@@ -221,11 +282,16 @@ class BaseScraper:
     
     def parse_html(self, html: str) -> BeautifulSoup:
         """Parse HTML string"""
+        if not html:
+            return BeautifulSoup("", 'html.parser')
         return BeautifulSoup(html, 'html.parser')
     
     def extract_urls(self, text: str) -> List[str]:
         """Extract URLs from text"""
         import re
+        if not text:
+            return []
+        
         urls = re.findall(
             r'https?://(?:www\.)?[^\s"\'<>]+',
             text
@@ -249,15 +315,19 @@ class BaseScraper:
 
 
 class ScraperRegistry:
-    """Registry for all available scrapers"""
+    """Registry for all available scrapers dengan async support"""
     
     def __init__(self):
         self.scrapers: Dict[str, BaseScraper] = {}
     
     def register(self, scraper: BaseScraper) -> None:
         """Register a scraper"""
+        if not isinstance(scraper, BaseScraper):
+            logger.error(f"Invalid scraper type: {type(scraper)}")
+            return
+        
         self.scrapers[scraper.SCRAPER_ID] = scraper
-        logger.info(f"Registered scraper: {scraper.SCRAPER_ID}")
+        logger.info(f"Registered scraper: {scraper.SCRAPER_ID} ({scraper.SITE_NAME})")
     
     def get(self, scraper_id: str) -> Optional[BaseScraper]:
         """Get scraper by ID"""
@@ -268,18 +338,94 @@ class ScraperRegistry:
         return list(self.scrapers.values())
     
     def scrape_all(self, query: str) -> Dict[str, List[Stream]]:
-        """Scrape all sources for a query"""
+        """
+        Scrape all sources for a query (SYNCHRONOUS - blocking)
+        
+        Args:
+            query: Search query
+        
+        Returns:
+            Dict dengan scraper_id -> list of streams
+        """
         results = {}
         
         for scraper_id, scraper in self.scrapers.items():
             try:
+                logger.info(f"Scraping {scraper_id}...")
                 streams = scraper.scrape(query)
+                
                 if streams:
                     results[scraper_id] = streams
                     logger.info(f"Got {len(streams)} streams from {scraper_id}")
+                else:
+                    logger.debug(f"No streams from {scraper_id}")
+                    
             except Exception as e:
                 logger.error(f"Error scraping {scraper_id}: {e}")
         
+        return results
+    
+    def scrape_all_async(self, query: str, timeout: int = 20) -> Dict[str, List[Stream]]:
+        """
+        Scrape all sources ASYNCHRONOUSLY untuk avoid blocking
+        
+        Args:
+            query: Search query
+            timeout: Total timeout in seconds
+        
+        Returns:
+            Dict dengan scraper_id -> list of streams
+        """
+        results = {}
+        
+        logger.info(f"Starting async scrape for: {query[:50]} (timeout: {timeout}s)")
+        
+        try:
+            # Use ThreadPoolExecutor untuk parallel scraping
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(3, len(self.scrapers))) as executor:
+                # Submit all scraping tasks
+                future_to_scraper = {
+                    executor.submit(scraper.scrape, query): scraper_id
+                    for scraper_id, scraper in self.scrapers.items()
+                }
+                
+                # Wait untuk results dengan timeout
+                try:
+                    for future in concurrent.futures.as_completed(future_to_scraper, timeout=timeout):
+                        scraper_id = future_to_scraper[future]
+                        
+                        try:
+                            streams = future.result(timeout=2)  # 2 sec per scraper max
+                            
+                            if streams:
+                                results[scraper_id] = streams
+                                logger.info(f"✓ Got {len(streams)} streams from {scraper_id}")
+                            else:
+                                logger.debug(f"✗ No streams from {scraper_id}")
+                                
+                        except concurrent.futures.TimeoutError:
+                            logger.warning(f"✗ Timeout for {scraper_id}")
+                        except Exception as e:
+                            logger.error(f"✗ Error from {scraper_id}: {e}")
+                
+                except concurrent.futures.TimeoutError:
+                    logger.warning(f"Global timeout ({timeout}s) reached, using partial results")
+                    
+                    # Collect any completed results
+                    for future in future_to_scraper:
+                        if future.done() and not future.cancelled():
+                            scraper_id = future_to_scraper[future]
+                            try:
+                                streams = future.result(timeout=0)
+                                if streams:
+                                    results[scraper_id] = streams
+                            except:
+                                pass
+        
+        except Exception as e:
+            logger.error(f"Async scrape failed: {e}")
+        
+        logger.info(f"Async scrape complete: {len(results)} sources returned results")
         return results
 
 
