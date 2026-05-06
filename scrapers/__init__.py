@@ -1,23 +1,25 @@
-"""
-Inisialisasi modul scrapers dan registrasi otomatis
-"""
 import logging
 from .base import registry
 
 logger = logging.getLogger(__name__)
 
-# Import scraper yang sudah ada
+# Register PornWatch
 try:
     from .pornwatch import pornwatch
     registry.register(pornwatch)
-    logger.info("PornWatch scraper berhasil diregistrasi.")
 except ImportError as e:
-    logger.warning(f"Gagal memuat PornWatch scraper: {e}")
+    logger.warning(f"Gagal memuat PornWatch: {e}")
 
-# Nanti jika Anda sudah punya mangoporn.py, tinggal tambahkan di sini:
-# try:
-#     from .mangoporn import mangoporn
-#     registry.register(mangoporn)
-# except ImportError:
-#     pass
+# Register MangoPorn
+try:
+    from .mangoporn import mangoporn
+    registry.register(mangoporn)
+except ImportError as e:
+    logger.warning(f"Gagal memuat MangoPorn: {e}")
 
+# Register XXXParodyHD
+try:
+    from .xxxparodyhd import xxxparodyhd
+    registry.register(xxxparodyhd)
+except ImportError as e:
+    logger.warning(f"Gagal memuat XXXParodyHD: {e}")
